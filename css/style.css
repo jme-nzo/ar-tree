@@ -282,6 +282,65 @@ button.primary:focus-visible { outline: 2px solid var(--ember); outline-offset: 
 
 #dev .row button:active { background: var(--hair); }
 
+/* ---------- placement + adjust controls ---------- */
+
+#place-hint {
+  position: fixed;
+  z-index: 30;
+  left: 0; right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  text-align: center;
+  font-family: var(--serif);
+  font-size: 22px;
+  letter-spacing: 0.01em;
+  color: var(--paper);
+  text-shadow: 0 1px 10px rgba(0,0,0,0.8);
+  pointer-events: none;
+  padding: 0 32px;
+  animation: hintpulse 2.4s ease-in-out infinite;
+}
+
+@keyframes hintpulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+#adjust-bar {
+  position: fixed;
+  z-index: 30;
+  left: 14px; right: 14px;
+  bottom: calc(env(safe-area-inset-bottom) + 18px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.adjust-tip {
+  text-align: center;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+  text-shadow: 0 1px 6px rgba(0,0,0,0.7);
+}
+
+#move-btn {
+  appearance: none;
+  margin-left: auto;
+  border: 1px solid var(--hair);
+  background: var(--ink-70);
+  color: var(--paper);
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  padding: 7px 12px;
+  border-radius: 2px;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+#move-btn:active { background: var(--hair); }
+#hud button[hidden] { display: none; }
+
 /* ---------- landing page only ---------- */
 
 body.landing { overflow-y: auto; }
