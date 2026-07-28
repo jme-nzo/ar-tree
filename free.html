@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<title>Growing tree · free mode</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<video id="feed" playsinline muted autoplay></video>
+<div id="stage"></div>
+
+<div id="hud">
+  <span id="count">0</span>
+  <span id="count-label">scans</span>
+</div>
+<div id="status"></div>
+
+<div id="gate">
+  <h1 class="mark">A tree that <em>grows</em> when you look</h1>
+  <p>No printed target needed. The tree stands in front of you. Move your phone to look around it, and tap the envelope on a branch.</p>
+  <button class="primary" id="begin">Allow camera and begin</button>
+</div>
+
+<div id="letter-scrim">
+  <div id="letter">
+    <div class="crease"></div>
+    <h2 id="letter-title"></h2>
+    <div class="body" id="letter-body"></div>
+    <div class="sign" id="letter-from"></div>
+    <button id="letter-close">Fold it back</button>
+  </div>
+</div>
+
+<div id="dev">
+  <label id="dev-read">0 scans</label>
+  <input type="range" id="dev-slider" min="0" max="400" value="0">
+  <div class="row">
+    <button id="dev-reset">Reset to seed</button>
+    <button id="dev-close">Close</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { buildTree, buildEnvelope, buildBird, flyBird, addLights, disposeTree } from './js/scene.js';
+import { getScans, addScan, getBird, grantBird } from './js/growth.js';
+import * as ui from './js/ui.js';
+
+const WORLD_SCALE = 3.0;   // the tree is authored in marker units, ~0.6 tall
+const DISTANCE    = 2.2;   // metres in front of the viewer
+const EYE_HEIGHT  = 1.45;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 100);
+const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.getElementById('stage').appendChild(renderer.domElement);
+addLights(scene);
+
+const root = new THREE.Group();
+root.scale.setScalar(WORLD_SCALE);
+root.position.set(0, -EYE_HEIGHT, -DISTANCE);
+scene.add(root);
+
+let tree = null, envelope = null, bird = null;
+let scans = 0, treeHeight = 0.4;
+const clock = new THREE.Clock();
+
+function rebuild(n) {
+  if (tree) { root.remove(tree.group); disposeTree(tree); }
+  tree = buildTree(n);
+  treeHeight = tree.height;
+  root.add(tree.group);
+
+  if (envelope) root.remove(envelope);
+  envelope = buildEnvelope();
+  envelope.position.copy(tree.envelopeAnchor);
+  envelope.position.z += 0.03;
+  root.add(envelope);
+}
+
+function spawnBird(v) {
+  if (bird) root.remove(bird);
+  bird = buildBird(v);
+  root.add(bird);
+}
+
+/* ---------- looking around ----------
+   Gyro if the phone allows it, touch drag if not. Both, actually: drag
+   still works as a nudge on top of the gyro. */
+
+let useGyro = false;
+let dragYaw = 0, dragPitch = 0;
+const devOri = { alpha: 0, beta: 0, gamma: 0 };
+const zee = new THREE.Vector3(0, 0, 1);
+const eul = new THREE.Euler();
+const qa = new THREE.Quaternion();
+const qb = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+
+function onOrient(e) {
+  if (e.alpha === null) return;
+  useGyro = true;
+  devOri.alpha = THREE.MathUtils.degToRad(e.alpha);
+  devOri.beta  = THREE.MathUtils.degToRad(e.beta);
+  devOri.gamma = THREE.MathUtils.degToRad(e.gamma);
+}
+
+function applyPose() {
+  if (useGyro) {
+    const orient = THREE.MathUtils.degToRad(screen.orientation?.angle || 0);
+    eul.set(devOri.beta, devOri.alpha, -devOri.gamma, 'YXZ');
+    camera.quaternion.setFromEuler(eul);
+    camera.quaternion.multiply(qb);
+    camera.quaternion.multiply(qa.setFromAxisAngle(zee, -orient));
+  } else {
+    camera.rotation.set(dragPitch, dragYaw, 0, 'YXZ');
+  }
+}
+
+let lastTouch = null, dragged = false;
+addEventListener('touchstart', (e) => {
+  lastTouch = e.touches[0]; dragged = false;
+}, { passive: true });
+
+addEventListener('touchmove', (e) => {
+  if (!lastTouch || useGyro) return;
+  const t = e.touches[0];
+  dragYaw   -= (t.clientX - lastTouch.clientX) * 0.005;
+  dragPitch -= (t.clientY - lastTouch.clientY) * 0.005;
+  dragPitch = Math.max(-1.2, Math.min(1.2, dragPitch));
+  lastTouch = t; dragged = true;
+}, { passive: true });
+
+/* ---------- start ---------- */
+
+async function begin() {
+  document.getElementById('gate').classList.add('hidden');
+
+  if (typeof DeviceOrientationEvent !== 'undefined'
+      && typeof DeviceOrientationEvent.requestPermission === 'function') {
+    try {
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res === 'granted') addEventListener('deviceorientation', onOrient);
+    } catch { /* fall through to drag */ }
+  } else {
+    addEventListener('deviceorientation', onOrient);
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }, audio: false,
+    });
+    const v = document.getElementById('feed');
+    v.srcObject = stream;
+    await v.play();
+  } catch {
+    ui.status('Camera blocked. The tree still renders, on black.');
+  }
+
+  scans = await addScan();
+  ui.renderCount(scans);
+  rebuild(scans);
+
+  const existing = getBird();
+  if (existing) spawnBird(existing.variant);
+
+  ui.status(existing ? 'Your bird is here.' : 'Find the envelope on a branch.', true);
+  renderer.setAnimationLoop(tick);
+}
+
+function tick() {
+  const t = clock.getElapsedTime();
+  applyPose();
+  if (envelope) {
+    envelope.lookAt(camera.position);
+    const r = envelope.userData.ring;
+    r.material.opacity = bird ? 0 : 0.28 + Math.sin(t * 2.1) * 0.16;
+    r.scale.setScalar(1 + Math.sin(t * 2.1) * 0.06);
+  }
+  if (bird) flyBird(bird, t, treeHeight, 'orbit');
+  renderer.render(scene, camera);
+}
+
+/* ---------- tapping the envelope ---------- */
+
+const ray = new THREE.Raycaster();
+const pt = new THREE.Vector2();
+
+function onTap(ev) {
+  if (dragged || !envelope || bird || ui.isLetterOpen()) return;
+  const p = ev.changedTouches ? ev.changedTouches[0] : ev;
+  pt.x = (p.clientX / innerWidth) * 2 - 1;
+  pt.y = -(p.clientY / innerHeight) * 2 + 1;
+  ray.setFromCamera(pt, camera);
+  if (!ray.intersectObject(envelope.userData.hit, true).length) return;
+
+  ui.openLetter(ui.letterFor(scans), () => {
+    const variant = scans % 4;
+    grantBird(variant);
+    spawnBird(variant);
+    ui.renderCount(scans);
+    ui.status(`A ${ui.birdName(variant)} follows you now. 24 hours.`, true);
+  });
+}
+
+addEventListener('touchend', onTap, { passive: true });
+addEventListener('click', onTap);
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+document.getElementById('letter-close').addEventListener('click', ui.closeLetter);
+document.getElementById('begin').addEventListener('click', begin, { once: true });
+
+ui.initDev((n) => { scans = n; rebuild(n); });
+getScans().then(ui.renderCount);
+</script>
+</body>
+</html>
