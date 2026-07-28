@@ -38,8 +38,7 @@
   </div>
 </div>
 
-<!-- placement + edit controls: only while facing the tree -->
-<div id="place-hint" hidden>Tap where the tree should stand</div>
+<!-- edit controls: only while facing the tree -->
 <div id="edit-bar" hidden>
   <span class="adjust-tip">Drag the tree with one finger · slider to resize</span>
   <label class="size-row">
@@ -50,17 +49,28 @@
 
 <div id="gate">
   <h1 class="mark">A tree that <em>grows</em> when you look</h1>
-  <p>Set the tree down in the room, size it, and lock it. Then walk up to it, around it, and let the bird find you.</p>
+  <p>Point your camera at any QR code. The moment it is recognised, a tree grows from that spot — then a bird comes to find you.</p>
   <button class="primary" id="begin">Allow camera and begin</button>
 </div>
 
-<div id="letter-scrim">
-  <div id="letter">
-    <div class="crease"></div>
-    <h2 id="letter-title"></h2>
-    <div class="body" id="letter-body"></div>
-    <div class="sign" id="letter-from"></div>
-    <button id="letter-close">Fold it back</button>
+<!-- QR scanner: the first thing after the camera opens -->
+<div id="scan" hidden>
+  <div class="scan-box"><i></i><i></i><i></i><i></i></div>
+  <p class="scan-hint">Point at any QR code to grow the tree</p>
+  <button class="primary" id="scan-skip" hidden>Continue without a code</button>
+</div>
+
+<!-- the writing interface behind each envelope -->
+<div id="write-scrim">
+  <div id="write">
+    <button id="write-close" aria-label="Close">✕</button>
+    <p class="write-prompt">Write or draw a memory — of a tree, an animal, a meaningful landscape, or a message for future generations.</p>
+    <textarea id="write-text" placeholder="Type your message…"></textarea>
+    <canvas id="write-canvas"></canvas>
+    <div class="write-actions">
+      <button id="write-clear">Clear drawing</button>
+      <button class="primary" id="write-save">Leave it on the branch</button>
+    </div>
   </div>
 </div>
 
@@ -104,12 +114,12 @@ const STRIDE     = 0.72;     // metres walked per detected step (for the counter
 const MOVE_STRIDE = 0.60;    // metres the tree shifts per step
 
 const BIRD_MODEL_URL = 'models/bird_hover_loop.glb';
-const BIRD_YAW_OFFSET = Math.PI;   // rotate the model so its beak points +x
+const BIRD_YAW_OFFSET = 0;   // model faces the user (beak toward the lens)
 
 const visH = 2 * NEAR_DIST * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
 const COMPANION_SCALE = (COMPANION_FRAC * visH) / BIRD_H;
 
-let phase = 'gate';          // gate -> preview -> edit -> locked
+let phase = 'gate';          // gate -> scanning -> growing -> edit -> locked
 let treeScale = BASE_SCALE;
 
 const scene    = new THREE.Scene();
@@ -137,7 +147,11 @@ const ring = new THREE.Mesh(
 );
 ring.rotation.x = -Math.PI / 2;
 ring.position.y = 0.001;
+ring.visible = false;   // hidden until the tree is placed and being edited
 root.add(ring);
+
+const GROW_TIME = 1.8;   // seconds for the tree to sprout out of the ground
+let growProgress = 0;
 
 let tree = null, envelopes = [], bird = null;
 let scans = 0, treeHeight = 0.4;
@@ -418,10 +432,11 @@ function tick() {
   const t  = clock.elapsedTime;
   applyPose();
 
-  if (phase === 'preview') {
-    const f = forwardHoriz();
-    root.position.set(f.x * DISTANCE, -EYE_HEIGHT, f.z * DISTANCE);
-    rootTarget.copy(root.position);
+  if (phase === 'growing') {
+    growProgress = Math.min(1, growProgress + dt / GROW_TIME);
+    const e = 1 - Math.pow(1 - growProgress, 3);   // easeOutCubic — a sprout
+    root.scale.setScalar(Math.max(0.001, treeScale * e));
+    if (growProgress >= 1) finishGrow();
   } else if (phase === 'locked') {
     root.position.lerp(rootTarget, 1 - Math.exp(-dt * 6));
     root.position.y = -EYE_HEIGHT;
@@ -454,11 +469,12 @@ let oneStart = null, oneMoved = false;
 
 function onControl(target) {
   return !!(target.closest && target.closest(
-    '#edit-bar,#hud,#bird-card,#dev,#gate,#letter-scrim,#lock-toggle,button,input,a'));
+    '#edit-bar,#hud,#bird-card,#dev,#gate,#scan,#write-scrim,#lock-toggle,button,input,textarea,a'));
 }
 
 addEventListener('touchstart', (e) => {
-  if (phase === 'gate' || ui.isLetterOpen() || onControl(e.target)) { oneStart = null; return; }
+  if (phase === 'gate' || phase === 'scanning' || phase === 'growing'
+      || isWriteOpen() || onControl(e.target)) { oneStart = null; return; }
   const p = e.touches[0];
   oneStart = { x: p.clientX, y: p.clientY };
   oneMoved = false;
@@ -489,32 +505,158 @@ const pt  = new THREE.Vector2();
 
 addEventListener('touchend', (e) => {
   if (e.touches.length > 0) return;
-  if (phase === 'preview' && oneStart && !oneMoved) { enterEdit(); oneStart = null; return; }
   if (phase === 'locked' && oneStart && !oneMoved) tryEnvelope(e);
   oneStart = null;
 }, { passive: true });
 
 addEventListener('click', (e) => {
   if (onControl(e.target)) return;
-  if (phase === 'preview') { enterEdit(); return; }
   if (phase === 'locked') tryEnvelope(e);
 });
 
 function tryEnvelope(ev) {
-  if (!envelopes.length || ui.isLetterOpen()) return;
+  if (!envelopes.length || isWriteOpen()) return;
   const p = ev.changedTouches ? ev.changedTouches[0] : ev;
   pt.x =  (p.clientX / innerWidth)  * 2 - 1;
   pt.y = -(p.clientY / innerHeight) * 2 + 1;
   ray.setFromCamera(pt, camera);
   for (const env of envelopes) {
     if (ray.intersectObject(env.userData.hit, true).length) {
-      ui.openLetter(ui.LETTERS[env.userData.letterIndex % ui.LETTERS.length], () => {
-        env.userData.opened = true;
-        ui.status('Folded away.', true);
-      });
+      env.userData.opened = true;
+      openWrite(env.userData.letterIndex);
       return;
     }
   }
+}
+
+/* ---------- the writing interface (per envelope) ----------
+   Type or handwrite/draw a memory. Persists per branch in localStorage. */
+
+const writeScrim = document.getElementById('write-scrim');
+const wcanvas = document.getElementById('write-canvas');
+const wtext   = document.getElementById('write-text');
+let writeIndex = -1, drawing = false, dctx = null;
+
+function isWriteOpen() { return writeScrim.classList.contains('open'); }
+
+function sizeCanvas() {
+  const r = wcanvas.getBoundingClientRect();
+  wcanvas.width  = Math.max(1, Math.round(r.width  * devicePixelRatio));
+  wcanvas.height = Math.max(1, Math.round(r.height * devicePixelRatio));
+  dctx = wcanvas.getContext('2d');
+  dctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  dctx.lineCap = 'round'; dctx.lineJoin = 'round';
+  dctx.lineWidth = 2.5; dctx.strokeStyle = '#22301F';
+}
+
+function openWrite(index) {
+  writeIndex = index;
+  wtext.value = localStorage.getItem('letter.text.' + index) || '';
+  writeScrim.classList.add('open');
+  requestAnimationFrame(() => {
+    sizeCanvas();
+    const saved = localStorage.getItem('letter.draw.' + index);
+    if (saved) {
+      const im = new Image();
+      im.onload = () => dctx.drawImage(im, 0, 0, wcanvas.width / devicePixelRatio, wcanvas.height / devicePixelRatio);
+      im.src = saved;
+    }
+  });
+}
+
+function saveWrite() {
+  if (writeIndex < 0) return;
+  localStorage.setItem('letter.text.' + writeIndex, wtext.value);
+  try { localStorage.setItem('letter.draw.' + writeIndex, wcanvas.toDataURL('image/png')); } catch { /* quota */ }
+}
+
+function closeWrite() {
+  saveWrite();
+  writeScrim.classList.remove('open');
+  writeIndex = -1;
+}
+
+function clearDrawing() {
+  dctx.save();
+  dctx.setTransform(1, 0, 0, 1, 0, 0);
+  dctx.clearRect(0, 0, wcanvas.width, wcanvas.height);
+  dctx.restore();
+}
+
+function canvasPos(e) {
+  const r = wcanvas.getBoundingClientRect();
+  const p = e.touches ? e.touches[0] : e;
+  return { x: p.clientX - r.left, y: p.clientY - r.top };
+}
+
+wcanvas.addEventListener('pointerdown', (e) => {
+  e.preventDefault(); drawing = true;
+  const p = canvasPos(e); dctx.beginPath(); dctx.moveTo(p.x, p.y);
+});
+wcanvas.addEventListener('pointermove', (e) => {
+  if (!drawing) return;
+  e.preventDefault();
+  const p = canvasPos(e); dctx.lineTo(p.x, p.y); dctx.stroke();
+});
+addEventListener('pointerup', () => { drawing = false; });
+
+document.getElementById('write-close').addEventListener('click', closeWrite);
+document.getElementById('write-save').addEventListener('click', closeWrite);
+document.getElementById('write-clear').addEventListener('click', clearDrawing);
+
+/* ---------- QR scanning (the opening step) ---------- */
+
+let scanCanvas = null, scanCtx = null, scanTimer = null, jsQR = null;
+
+async function startScanning() {
+  try {
+    const mod = await import('https://cdn.jsdelivr.net/npm/jsqr@1.4.0/+esm');
+    jsQR = mod.default || mod;
+  } catch {
+    // scanner library unavailable — don't strand the visitor
+    document.getElementById('scan-skip').hidden = false;
+    ui.status('Scanner unavailable — you can continue without a code.');
+    return;
+  }
+  scanCanvas = document.createElement('canvas');
+  scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
+  scanTimer = setInterval(scanFrame, 220);
+}
+
+function scanFrame() {
+  const v = document.getElementById('feed');
+  if (!v.videoWidth) return;
+  const w = 340, h = Math.max(1, Math.round(w * v.videoHeight / v.videoWidth));
+  scanCanvas.width = w; scanCanvas.height = h;
+  scanCtx.drawImage(v, 0, 0, w, h);
+  let img;
+  try { img = scanCtx.getImageData(0, 0, w, h); } catch { return; }
+  const code = jsQR(img.data, w, h, { inversionAttempts: 'attemptBoth' });
+  if (code) handleScanned();
+}
+
+async function handleScanned() {
+  if (phase !== 'scanning') return;
+  phase = 'growing';
+  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  document.getElementById('scan').hidden = true;
+
+  scans = await addScan();
+  ui.renderCount(scans);
+
+  // sprout the tree on the ground where you were pointing
+  const f = forwardHoriz();
+  root.position.set(f.x * DISTANCE, -EYE_HEIGHT, f.z * DISTANCE);
+  rootTarget.copy(root.position);
+  rebuild(scans);
+  growProgress = 0;
+  root.scale.setScalar(0.001);
+  ui.status('');
+}
+
+function finishGrow() {
+  root.scale.setScalar(treeScale);
+  enterEdit();
 }
 
 /* ---------- stop iOS from zooming the page ---------- */
@@ -537,7 +679,6 @@ const lockToggle = document.getElementById('lock-toggle');
 
 function enterEdit() {
   phase = 'edit';
-  document.getElementById('place-hint').hidden = true;
   document.getElementById('edit-bar').hidden = false;
   ring.visible = true;
   lockToggle.hidden = false;
@@ -579,12 +720,12 @@ async function askPermission(EventClass) {
 
 async function begin() {
   document.getElementById('gate').classList.add('hidden');
-  phase = 'preview';
-  document.getElementById('place-hint').hidden = false;
+  phase = 'scanning';
 
   if (await askPermission(window.DeviceOrientationEvent)) addEventListener('deviceorientation', onOrient);
   if (await askPermission(window.DeviceMotionEvent))       addEventListener('devicemotion', onMotion);
 
+  let camOk = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: 'environment' } }, audio: false,
@@ -593,13 +734,16 @@ async function begin() {
     v.srcObject = stream;
     await v.play();
   } catch {
-    ui.status('Camera blocked. The tree still renders, on black.');
+    camOk = false;
+    ui.status('Camera blocked — you can continue without a code.');
   }
 
-  scans = await addScan();
-  ui.renderCount(scans);
-  rebuild(scans);
+  ui.renderCount(await getScans());
   renderer.setAnimationLoop(tick);
+
+  document.getElementById('scan').hidden = false;
+  if (camOk) startScanning();
+  else document.getElementById('scan-skip').hidden = false;
 }
 
 addEventListener('resize', () => {
@@ -608,7 +752,7 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-document.getElementById('letter-close').addEventListener('click', ui.closeLetter);
+document.getElementById('scan-skip').addEventListener('click', handleScanned);
 document.getElementById('begin').addEventListener('click', begin, { once: true });
 
 ui.initDev((n) => { scans = n; rebuild(n); });
