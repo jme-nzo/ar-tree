@@ -75,7 +75,9 @@
 
 <script type="module">
 import * as THREE from 'three';
-import { buildTree, buildEnvelope, buildBird, addLights, disposeTree } from './js/scene.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { buildTree, buildEnvelope, buildBird, addLights, disposeTree, BIRD_VARIANTS } from './js/scene.js';
 import { getScans, addScan } from './js/growth.js';
 import * as ui from './js/ui.js';
 
@@ -97,9 +99,12 @@ const MAX_SCALE  = 14.0;
 const FOV        = 70;
 const NEAR_DIST  = 1.2;      // how far in front of the lens the bird flies
 const COMPANION_FRAC = 0.30; // fraction of screen height the bird fills up close
-const BIRD_H     = 0.30;     // the model's rough height at scale 1
+const BIRD_H     = 0.30;     // the bird's normalised height at scale 1
 const STRIDE     = 0.72;     // metres walked per detected step (for the counter)
 const MOVE_STRIDE = 0.60;    // metres the tree shifts per step
+
+const BIRD_MODEL_URL = 'models/bird_hover_loop.glb';
+const BIRD_YAW_OFFSET = Math.PI;   // rotate the model so its beak points +x
 
 const visH = 2 * NEAR_DIST * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
 const COMPANION_SCALE = (COMPANION_FRAC * visH) / BIRD_H;
@@ -114,6 +119,10 @@ renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.getElementById('stage').appendChild(renderer.domElement);
 addLights(scene);
+
+// A soft studio environment so the model's PBR materials read nicely.
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
 
 // Camera stays at the origin and only rotates; walking moves this instead.
 const root = new THREE.Group();
@@ -133,6 +142,66 @@ root.add(ring);
 let tree = null, envelopes = [], bird = null;
 let scans = 0, treeHeight = 0.4;
 const clock = new THREE.Clock();
+
+/* ---------- the hummingbird model ----------
+   A rigged, animated glTF. It loads asynchronously; until it arrives (or if it
+   fails) the hand-built low-poly bird stands in, so the piece never breaks. */
+
+let birdModel = null;    // the prepared, normalised model group (reused, one instance)
+let birdMixer = null;    // plays its baked hover/flap animation
+
+// The meshes are skinned, so their geometry bounding box is bind-pose garbage.
+// The skeleton's bone positions are the only honest measure of where the bird
+// actually is and how big it renders.
+function boneBox(obj) {
+  obj.updateMatrixWorld(true);
+  let skel = null;
+  obj.traverse((o) => { if (o.isSkinnedMesh && o.skeleton) skel = o.skeleton; });
+  const box = new THREE.Box3();
+  if (skel) {
+    const v = new THREE.Vector3();
+    skel.bones.forEach((b) => { v.setFromMatrixPosition(b.matrixWorld); box.expandByPoint(v); });
+  } else {
+    box.setFromObject(obj);
+  }
+  return box;
+}
+
+new GLTFLoader().load(BIRD_MODEL_URL, (gltf) => {
+  const inner = gltf.scene;
+  const orient = new THREE.Group();
+  orient.add(inner);
+  birdModel = new THREE.Group();
+  birdModel.add(orient);
+
+  // scale so the bird's largest span is BIRD_H, then re-centre on the skeleton
+  const size = boneBox(birdModel).getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z) || 1;
+  orient.scale.setScalar(BIRD_H / maxDim);
+  orient.rotation.y = BIRD_YAW_OFFSET;
+  const c = boneBox(birdModel).getCenter(new THREE.Vector3());
+  orient.position.sub(c);
+
+  birdModel.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = false; } });
+
+  if (gltf.animations && gltf.animations.length) {
+    birdMixer = new THREE.AnimationMixer(inner);
+    birdMixer.clipAction(gltf.animations[0]).play();
+  }
+
+  // if a placeholder bird is already flying, upgrade to the real one in place
+  if (bird && !bird.userData.isModel) {
+    const keep = bird.position.clone();
+    const variant = bird.userData.variant;
+    scene.remove(bird);
+    bird = birdModel;
+    bird.userData = { variant, isModel: true, phase: 0 };
+    bird.position.copy(keep);
+    scene.add(bird);
+  }
+}, undefined, (err) => {
+  console.warn('bird model failed to load, keeping the low-poly bird', err);
+});
 
 function rebuild(n) {
   if (tree) { root.remove(tree.group); disposeTree(tree); }
@@ -303,11 +372,14 @@ function updateBird(dt, time) {
   const camH = Math.atan2(bird.position.z, -bird.position.x);
   bird.rotation.y = lerpAngle(camH, travelH, bs.vis);
 
-  const amp = 0.35 + 0.8 * (1 - perch);
-  const beat = Math.sin(time * spd * 8 + bird.userData.phase) * 0.5 + 0.5;
-  const up = 0.12 + beat * amp;
-  bird.userData.rightWing.rotation.x = -up;
-  bird.userData.leftWing.rotation.x  =  up;
+  // the low-poly fallback flaps in code; the model flaps via its own animation
+  if (!bird.userData.isModel) {
+    const amp = 0.35 + 0.8 * (1 - perch);
+    const beat = Math.sin(time * spd * 8 + bird.userData.phase) * 0.5 + 0.5;
+    const up = 0.12 + beat * amp;
+    bird.userData.rightWing.rotation.x = -up;
+    bird.userData.leftWing.rotation.x  =  up;
+  }
 
   const showCard = bs.vis < 0.5;
   if (showCard !== bs.card) {
@@ -321,16 +393,22 @@ function updateBird(dt, time) {
 }
 
 function spawnBird(variant) {
+  const v = BIRD_VARIANTS[variant % BIRD_VARIANTS.length];
   if (bird) scene.remove(bird);
-  bird = buildBird(variant);
+  if (birdModel) {
+    bird = birdModel;
+    bird.userData = { variant: v, isModel: true, phase: 0 };
+  } else {
+    bird = buildBird(variant);
+  }
   scene.add(bird);
   root.updateMatrixWorld();
   _treeTop.set(0, treeHeight, 0);
   root.localToWorld(_treeTop);
   bird.position.copy(_treeTop);
   birdState.vis = 1; birdState.perch = 0;
-  document.getElementById('bird-name').textContent = bird.userData.variant.name;
-  document.getElementById('bird-note').textContent = bird.userData.variant.note;
+  document.getElementById('bird-name').textContent = v.name;
+  document.getElementById('bird-note').textContent = v.note;
 }
 
 /* ---------- render loop ---------- */
@@ -360,6 +438,7 @@ function tick() {
   }
 
   updateBird(dt, t);
+  if (birdMixer) birdMixer.update(dt * (0.9 + birdState.vis * 0.3));
 
   // the size controls belong to the tree: only while you are facing it
   if (phase === 'edit') {

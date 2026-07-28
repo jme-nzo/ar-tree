@@ -75,6 +75,7 @@ which is useful for showing collaborators a specific stage.
 | Procedural tree driven by one number | Real, deterministic and seeded |
 | Three envelopes, three letters, fold interaction | Real |
 | Bird: orbit → perch → follow-the-camera, with its card | Real |
+| Rigged glTF hummingbird with baked wing-flap animation | Real, with a low-poly fallback |
 | Four bird variants, 24 hour expiry | Real |
 | Walk-to-scale + walk-around (step dead-reckoning) | Real, but *estimated* — see tracking note |
 | Distance-covered counter from the pedometer | Real, estimated from steps |
@@ -119,12 +120,20 @@ None of this affects the code. Both serve the same static files.
 ## Files
 
 ```
-index.html      the whole experience: place, scale, lock, look, bird
-js/scene.js     the artwork: tree, envelope, bird meshes
-js/growth.js    the growth curve and the two swap points
-js/ui.js        letters, HUD, overlay, dev panel
-css/style.css   all styling
+index.html               the whole experience: place, scale, lock, look, bird
+js/scene.js              the artwork: tree, envelope, low-poly fallback bird
+js/growth.js             the growth curve and the two swap points
+js/ui.js                 letters, HUD, overlay, dev panel
+css/style.css            all styling
+models/bird_hover_loop.glb   rigged, animated hummingbird (loaded at runtime)
 ```
+
+Swapping the bird: drop a different rigged `.glb` in `models/` and point
+`BIRD_MODEL_URL` at it near the top of the module script in `index.html`. The
+loader measures the skeleton (not the bind-pose mesh bounds, which are
+meaningless for skinned meshes) to normalise size and centre, and plays the
+first animation clip. If the file is missing or fails, the hand-built low-poly
+bird stands in.
 
 ## Known rough edges
 
