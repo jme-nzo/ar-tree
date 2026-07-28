@@ -31,10 +31,10 @@ const PAPER = new THREE.MeshLambertMaterial({
 });
 
 export const BIRD_VARIANTS = [
-  { name: 'Tiklíng',  body: 0xD2703A, wing: 0xEFE6D2, size: 1.00, speed: 1.00 },
-  { name: 'Maya',     body: 0x8C7A5B, wing: 0xC7B48C, size: 0.82, speed: 1.35 },
-  { name: 'Kalaw',    body: 0x2E3A2A, wing: 0xEFE6D2, size: 1.28, speed: 0.72 },
-  { name: 'Pipit',    body: 0x5D7FA0, wing: 0xBFD3E0, size: 0.74, speed: 1.55 },
+  { name: 'Tiklíng', note: 'a rufous ground bird (placeholder)', body: 0xD2703A, wing: 0xEFE6D2, size: 1.00, speed: 1.00 },
+  { name: 'Maya',    note: 'a small city sparrow (placeholder)', body: 0x8C7A5B, wing: 0xC7B48C, size: 0.86, speed: 1.35 },
+  { name: 'Kalaw',   note: 'a big-billed hornbill (placeholder)', body: 0x2E3A2A, wing: 0xEFE6D2, size: 1.24, speed: 0.72 },
+  { name: 'Pipit',   note: 'a quick blue pipit (placeholder)',    body: 0x5D7FA0, wing: 0xBFD3E0, size: 0.80, speed: 1.55 },
 ];
 
 /* ---------- tree ---------- */
@@ -185,72 +185,83 @@ export function buildEnvelope() {
 
 /* ---------- birds ---------- */
 
-export function buildBird(variantIndex) {
-  const v = BIRD_VARIANTS[variantIndex % BIRD_VARIANTS.length];
-  const s = v.size;
-  const g = new THREE.Group();
-
-  const bodyMat = new THREE.MeshLambertMaterial({ color: v.body });
-  const wingMat = new THREE.MeshLambertMaterial({
-    color: v.wing, side: THREE.DoubleSide,
-  });
-
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.016 * s, 8, 6), bodyMat);
-  body.scale.set(1.6, 0.85, 0.85);
-  g.add(body);
-
-  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.005 * s, 0.018 * s, 5), bodyMat);
-  beak.rotation.z = -Math.PI / 2;
-  beak.position.x = 0.030 * s;
-  g.add(beak);
-
-  const tail = new THREE.Mesh(new THREE.PlaneGeometry(0.030 * s, 0.016 * s), wingMat);
-  tail.position.x = -0.030 * s;
-  tail.rotation.x = Math.PI / 2;
-  g.add(tail);
-
-  const wingGeo = new THREE.PlaneGeometry(0.055 * s, 0.024 * s);
-  wingGeo.translate(0, 0.027 * s, 0);
-
-  const left = new THREE.Mesh(wingGeo, wingMat);
-  left.rotation.z = Math.PI / 2;
-  const right = new THREE.Mesh(wingGeo, wingMat);
-  right.rotation.z = -Math.PI / 2;
-  g.add(left, right);
-
-  g.userData = { variant: v, left, right, phase: variantIndex * 1.7, s };
-  return g;
+// A flat, indexed triangle mesh from a raw vertex/face list. Cheap way to get
+// an actual wing/tail *shape* without pulling in a glTF file and a loader.
+function triMesh(verts, faces, mat) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(faces);
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, mat);
 }
 
 /**
- * Fly the bird on a lissajous orbit. `mode` is 'orbit' (around the tree)
- * or 'near' (hovering in front of the viewer, the companion state).
+ * A low-poly bird. Not a photoscan, but unmistakably a bird: an elongated
+ * body, a head with a beak and two eyes, a softly forked tail, and two wings
+ * that live on their own pivots so they can flap. The nose points along +x.
+ *
+ * Everything sits inside an inner group scaled by the variant size, so the
+ * outer group's scale is free for the animation code to drive (companion vs
+ * perched). Swap this whole function for a GLTFLoader load later if you want a
+ * real model — the rest of the code only touches userData.{leftWing,rightWing}.
  */
-export function flyBird(bird, time, treeHeight, mode = 'orbit') {
-  const u = bird.userData;
-  const spd = u.variant.speed;
-  const T = time * spd + u.phase;
+export function buildBird(variantIndex) {
+  const v = BIRD_VARIANTS[variantIndex % BIRD_VARIANTS.length];
+  const g = new THREE.Group();
+  const inner = new THREE.Group();
+  g.add(inner);
 
-  const r = mode === 'near' ? 0.10 : 0.14 + treeHeight * 0.30;
-  const cy = mode === 'near' ? treeHeight * 0.55 : treeHeight * 0.72;
+  const bodyMat = new THREE.MeshLambertMaterial({ color: v.body });
+  const wingMat = new THREE.MeshLambertMaterial({ color: v.wing, side: THREE.DoubleSide });
+  const beakMat = new THREE.MeshLambertMaterial({ color: 0xE8A13A });
+  const eyeMat  = new THREE.MeshLambertMaterial({ color: 0x14100C });
 
-  const x = Math.cos(T * 0.75) * r;
-  const z = Math.sin(T * 0.75) * r * 0.85;
-  const y = cy + Math.sin(T * 1.35) * (mode === 'near' ? 0.020 : 0.055);
+  // body — an elongated blob down the x axis
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 12), bodyMat);
+  body.scale.set(1.9, 0.98, 0.98);
+  inner.add(body);
 
-  const prev = bird.position.clone();
-  bird.position.set(x, y, z);
+  // head, lifted toward the front
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.088, 14, 12), bodyMat);
+  head.position.set(0.235, 0.065, 0);
+  inner.add(head);
 
-  // Aim along travel using the parent's own axes. lookAt would work in world
-  // space and go wrong the moment the tree sits under a rotated anchor.
-  const hx = bird.position.x - prev.x;
-  const hz = bird.position.z - prev.z;
-  if (hx * hx + hz * hz > 1e-10) bird.rotation.y = Math.atan2(-hz, hx);
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.12, 7), beakMat);
+  beak.rotation.z = -Math.PI / 2;
+  beak.position.set(0.345, 0.05, 0);
+  inner.add(beak);
 
-  // Wingbeat. Faster birds flap faster, which is most of what sells them.
-  const flap = Math.sin(T * 9) * 0.75;
-  u.left.rotation.z = Math.PI / 2 - flap;
-  u.right.rotation.z = -Math.PI / 2 + flap;
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.018, 8, 6), eyeMat);
+    eye.position.set(0.275, 0.1, 0.052 * side);
+    inner.add(eye);
+  }
+
+  // tail — swept back down -x, softly forked
+  inner.add(triMesh(
+    [-0.10, 0, 0,  -0.36, 0.006, 0.11,  -0.30, 0, 0,  -0.36, 0.006, -0.11],
+    [0, 1, 2,  0, 2, 3],
+    wingMat
+  ));
+
+  // wings — each on a shoulder pivot so rotation.x flaps them
+  const rVerts = [0.09, 0, 0,  -0.11, 0, 0,  -0.10, 0, 0.30,  0.05, 0, 0.28,  -0.06, 0, 0.54];
+  const rFaces = [0, 3, 1,  1, 3, 2,  3, 4, 2];
+  const lVerts = rVerts.map((n, i) => (i % 3 === 2 ? -n : n));   // mirror across z
+
+  const rightWing = new THREE.Group();
+  rightWing.add(triMesh(rVerts, rFaces, wingMat));
+  rightWing.position.set(0.02, 0.05, 0.05);
+
+  const leftWing = new THREE.Group();
+  leftWing.add(triMesh(lVerts, rFaces, wingMat));
+  leftWing.position.set(0.02, 0.05, -0.05);
+
+  inner.add(rightWing, leftWing);
+
+  inner.scale.setScalar(v.size);
+  g.userData = { variant: v, leftWing, rightWing, phase: variantIndex * 1.7 };
+  return g;
 }
 
 /* ---------- lighting ---------- */

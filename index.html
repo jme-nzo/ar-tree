@@ -24,20 +24,33 @@
 <div id="hud">
   <span id="count">0</span>
   <span id="count-label">scans</span>
-  <button id="move-btn" hidden>Move tree</button>
 </div>
+<button id="lock-toggle" hidden>Lock</button>
 <div id="status"></div>
 
-<!-- placement / adjust controls -->
+<!-- the bird's card: appears when the bird is in front of the lens -->
+<div id="bird-card" hidden>
+  <div class="bird-name" id="bird-name">Bird</div>
+  <div class="bird-note" id="bird-note"></div>
+  <div class="bird-stats">
+    <span><b id="bird-steps">0</b> steps</span>
+    <span><b id="bird-dist">0 m</b> together</span>
+  </div>
+</div>
+
+<!-- placement + edit controls -->
 <div id="place-hint" hidden>Tap where the tree should stand</div>
-<div id="adjust-bar" hidden>
-  <span class="adjust-tip">Pinch to resize · drag with two fingers to move</span>
-  <button class="primary" id="lock-btn">Lock in place</button>
+<div id="edit-bar" hidden>
+  <span class="adjust-tip">Drag the tree with one finger to move it</span>
+  <label class="size-row">
+    <span>Size</span>
+    <input type="range" id="size-slider" min="1.4" max="14" step="0.1" value="3">
+  </label>
 </div>
 
 <div id="gate">
   <h1 class="mark">A tree that <em>grows</em> when you look</h1>
-  <p>Set the tree down in the room in front of you, size it with a pinch, and lock it in place. A bird will keep you company.</p>
+  <p>Set the tree down in the room in front of you, move and size it, then lock it in place. A bird will keep you company.</p>
   <button class="primary" id="begin">Allow camera and begin</button>
 </div>
 
@@ -67,39 +80,44 @@ import { getScans, addScan } from './js/growth.js';
 import * as ui from './js/ui.js';
 
 /* ---------------------------------------------------------------------------
-   ONE experience. No modes, no marker. The tree is placed markerlessly in
-   front of you, anchored by gyro so it stays put in space as you look around.
-   Pinch to scale, two fingers to move, then lock. A bird orbits the tree,
-   perches on top, and — when you look away — flies in front of the camera and
-   refuses to leave.
+   ONE experience, no pinch. Place the tree markerlessly, move it with one
+   finger, size it with the slider, then Lock. A low-poly bird orbits the tree,
+   perches on top, and — when you look away — swells to fill the view right in
+   front of the lens and follows you, with a little card of who it is and how
+   far you have walked together.
 --------------------------------------------------------------------------- */
 
-const EYE_HEIGHT = 1.4;    // metres: how high the phone is held off the floor
+const EYE_HEIGHT = 1.4;    // metres the phone is held off the floor
 const DISTANCE   = 2.0;    // metres in front of you when first placed
-const BASE_SCALE = 3.0;    // the tree is authored ~0.6 tall; this sizes it up
+const BASE_SCALE = 3.0;
 const MIN_SCALE  = 1.4;
 const MAX_SCALE  = 14.0;
-const NEAR_DIST  = 0.6;    // how far in front of the lens the bird nags you from
+const FOV        = 70;
+const NEAR_DIST  = 0.85;   // how far in front of the lens the bird nags you
+const COMPANION_FRAC = 0.55; // fraction of screen height the bird fills up close
+const BIRD_H     = 0.30;   // the model's rough height at scale 1
+const STRIDE     = 0.72;   // metres per detected step
 
-let phase = 'gate';        // gate -> preview -> adjust -> locked
+// How big the bird must be, at NEAR_DIST, to fill COMPANION_FRAC of the screen.
+const visH = 2 * NEAR_DIST * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+const COMPANION_SCALE = (COMPANION_FRAC * visH) / BIRD_H;
+
+let phase = 'gate';        // gate -> preview -> edit -> locked
 let treeScale = BASE_SCALE;
 
 const scene    = new THREE.Scene();
-const camera   = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 100);
+const camera   = new THREE.PerspectiveCamera(FOV, innerWidth / innerHeight, 0.01, 100);
 const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.getElementById('stage').appendChild(renderer.domElement);
 addLights(scene);
 
-// The anchored group. Camera sits at the origin and only ever rotates (gyro),
-// so anything parented here stays fixed in the room as you turn.
 const root = new THREE.Group();
 root.scale.setScalar(treeScale);
 root.position.set(0, -EYE_HEIGHT, -DISTANCE);
 scene.add(root);
 
-// A soft ring on the floor so the placement reads as "on the ground".
 const ring = new THREE.Mesh(
   new THREE.RingGeometry(0.34, 0.4, 48),
   new THREE.MeshBasicMaterial({ color: 0xEFE6D2, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
@@ -125,7 +143,7 @@ function rebuild(n) {
   root.add(envelope);
 }
 
-/* ---------- gyro / drag pose (unchanged, it works) ---------- */
+/* ---------- gyro / drag pose ---------- */
 
 let useGyro = false;
 let dragYaw = 0, dragPitch = 0;
@@ -155,6 +173,24 @@ function applyPose() {
   }
 }
 
+/* ---------- pedometer ----------
+   No positional tracking on iOS Safari, but the accelerometer can still count
+   footfalls. This is what "distance walked with the bird" is measured from. */
+
+let steps = 0, grav = 9.8, stepArmed = true, lastStepAt = 0;
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity || e.acceleration;
+  if (!a) return;
+  const mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+  grav += (mag - grav) * 0.08;          // slow baseline ~ gravity
+  const dyn = mag - grav;               // the bump from a footfall
+  const now = performance.now();
+  if (dyn > 2.2 && stepArmed && now - lastStepAt > 300) {
+    steps++; stepArmed = false; lastStepAt = now;
+  }
+  if (dyn < 0.6) stepArmed = true;
+}
+
 /* ---------- helpers ---------- */
 
 const _fwd = new THREE.Vector3();
@@ -172,8 +208,7 @@ function rightHoriz() {
   return _right.normalize();
 }
 function lerpAngle(a, b, t) {
-  let d = b - a;
-  d = Math.atan2(Math.sin(d), Math.cos(d));
+  let d = b - a; d = Math.atan2(Math.sin(d), Math.cos(d));
   return a + d * t;
 }
 function smoothstep(a, b, x) {
@@ -181,16 +216,10 @@ function smoothstep(a, b, x) {
   return t * t * (3 - 2 * t);
 }
 
-/* ---------- the bird brain ----------
-   Two continuous drives, no hard state machine:
-     vis   1 when you are looking at the tree, 0 when you have turned away
-     perch grows while you keep looking at the tree, so it settles on top
-   Target position blends between an orbit around the tree and a fixed point
-   right in front of the lens. The bird eases toward that target every frame,
-   which is what makes it *chase* you when you spin around. */
+/* ---------- the bird brain ---------- */
 
-const birdState = { vis: 1, perch: 0, prev: new THREE.Vector3() };
-const PERCH_DELAY = 5.0;   // seconds of looking before it lands on top
+const birdState = { vis: 1, perch: 0, prev: new THREE.Vector3(), card: false };
+const PERCH_DELAY = 5.0;
 
 const _treeTop = new THREE.Vector3();
 const _orbit   = new THREE.Vector3();
@@ -205,29 +234,23 @@ const _camUp   = new THREE.Vector3();
 function updateBird(dt, time) {
   if (!bird) return;
   const bs = birdState;
-  bird.scale.setScalar(Math.min(treeScale, 6) * 0.7);   // stays a bird even on a giant tree
 
   root.updateMatrixWorld();
-
-  // Where is the top of the tree, in the room?
   _treeTop.set(0, treeHeight, 0);
   root.localToWorld(_treeTop);
 
-  // How centred is the tree in your view? (camera sits at the origin)
   _camDir.set(0, 0, -1).applyQuaternion(camera.quaternion);
   _camRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
   _camUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-  const toTree = _treeTop.clone().normalize();
-  const dot = _camDir.dot(toTree);
-  const visTarget = smoothstep(0.62, 0.9, dot);   // 1 looking at it, 0 away
+  const dot = _camDir.dot(_treeTop.clone().normalize());
+  const visTarget = smoothstep(0.62, 0.9, dot);       // 1 at the tree, 0 away
   bs.vis += (visTarget - bs.vis) * (1 - Math.exp(-dt * 6));
 
-  // Perch timer only advances while the tree is squarely in view.
   bs.perch += (bs.vis > 0.82 ? dt : -dt * 2.2);
   bs.perch = Math.max(0, Math.min(PERCH_DELAY, bs.perch));
   const perch = smoothstep(0, PERCH_DELAY, bs.perch);
 
-  // --- target A: around / on top of the tree ---
+  // target A: around / on top of the tree
   const R = (0.18 + treeHeight * 0.5) * treeScale * (1 - perch);
   const spd = bird.userData.variant.speed;
   const ang = time * spd * 0.9;
@@ -236,45 +259,60 @@ function updateBird(dt, time) {
   _orbit.x += Math.cos(ang) * R;
   _orbit.z += Math.sin(ang) * R * 0.8;
   _orbit.y += bob + 0.04 * treeScale;
-  _perchP.copy(_treeTop);
-  _perchP.y += 0.03 * treeScale;                  // sits just on the crown
+  _perchP.copy(_treeTop); _perchP.y += 0.05 * treeScale;
   _treeTgt.copy(_orbit).lerp(_perchP, perch);
 
-  // --- target B: hovering right in front of your face ---
+  // target B: hovering right in front of your face
   _comp.copy(_camDir).multiplyScalar(NEAR_DIST);
-  _comp.addScaledVector(_camRight, Math.cos(time * 1.7) * 0.13);
-  _comp.addScaledVector(_camUp,    Math.sin(time * 2.2) * 0.08);
+  _comp.addScaledVector(_camRight, Math.cos(time * 1.6) * 0.14);
+  _comp.addScaledVector(_camUp,    Math.sin(time * 2.1) * 0.09 - 0.05);
 
-  // Blend and ease. Slower easing when it is chasing you = it lags, then catches.
   _target.copy(_comp).lerp(_treeTgt, bs.vis);
   const rate = 3.2 + bs.vis * 4.5;
   bs.prev.copy(bird.position);
   bird.position.lerp(_target, 1 - Math.exp(-dt * rate));
 
-  // Face travel near the tree, face *you* when it is nagging you.
+  // scale: proportional to the tree when perched, huge when in your face
+  const treeBird = Math.min(treeScale, 7) * 0.28;
+  bird.scale.setScalar(COMPANION_SCALE + (treeBird - COMPANION_SCALE) * bs.vis);
+
+  // facing: travel near the tree, straight at you when nagging
   const vx = bird.position.x - bs.prev.x;
   const vz = bird.position.z - bs.prev.z;
   const travelH = (vx * vx + vz * vz > 1e-8) ? Math.atan2(-vz, vx) : bird.rotation.y;
-  const camH = Math.atan2(bird.position.z, -bird.position.x); // face the origin (lens)
+  const camH = Math.atan2(bird.position.z, -bird.position.x);
   bird.rotation.y = lerpAngle(camH, travelH, bs.vis);
 
-  // Wingbeat.
-  const flap = Math.sin(time * 9 * spd) * 0.75;
-  bird.userData.left.rotation.z  =  Math.PI / 2 - flap;
-  bird.userData.right.rotation.z = -Math.PI / 2 + flap;
+  // wingbeat — folds down when it settles to perch
+  const amp = 0.35 + 0.8 * (1 - perch);
+  const beat = Math.sin(time * spd * 8 + bird.userData.phase) * 0.5 + 0.5;
+  const up = 0.12 + beat * amp;
+  bird.userData.rightWing.rotation.x = -up;
+  bird.userData.leftWing.rotation.x  =  up;
+
+  // the card rides with the companion state
+  const showCard = bs.vis < 0.5;
+  if (showCard !== bs.card) {
+    bs.card = showCard;
+    document.getElementById('bird-card').hidden = !showCard;
+  }
+  if (showCard) {
+    document.getElementById('bird-steps').textContent = steps;
+    document.getElementById('bird-dist').textContent = (steps * STRIDE).toFixed(1) + ' m';
+  }
 }
 
 function spawnBird(variant) {
   if (bird) scene.remove(bird);
   bird = buildBird(variant);
   scene.add(bird);
-  // Start it out at the tree so it visibly leaves the tree the first time you turn.
   root.updateMatrixWorld();
   _treeTop.set(0, treeHeight, 0);
   root.localToWorld(_treeTop);
   bird.position.copy(_treeTop);
-  birdState.vis = 1;
-  birdState.perch = 0;
+  birdState.vis = 1; birdState.perch = 0;
+  document.getElementById('bird-name').textContent = bird.userData.variant.name;
+  document.getElementById('bird-note').textContent = bird.userData.variant.note;
 }
 
 /* ---------- render loop ---------- */
@@ -301,90 +339,57 @@ function tick() {
 }
 
 /* ---------- gestures ----------
-   one finger  = tap to place / tap the envelope (and drag to look if no gyro)
-   two fingers = pinch to scale + drag to move, while adjusting               */
+   one finger only. In edit mode it moves the tree along the floor
+   (sideways + nearer/farther). No pinch anywhere. */
 
 let oneStart = null, oneMoved = false;
-let pinch = null;   // { dist, mx, my }
 
-function touchDist(a, b) {
-  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-}
-function touchMid(a, b) {
-  return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+function onControl(target) {
+  return !!(target.closest && target.closest(
+    '#edit-bar,#hud,#bird-card,#dev,#gate,#letter-scrim,#lock-toggle,button,input,a'));
 }
 
 addEventListener('touchstart', (e) => {
-  if (phase === 'gate' || ui.isLetterOpen()) return;
-
-  if (e.touches.length === 2) {
-    if (phase === 'preview') enterAdjust();
-    if (phase === 'adjust') {
-      const m = touchMid(e.touches[0], e.touches[1]);
-      pinch = { dist: touchDist(e.touches[0], e.touches[1]), mx: m.x, my: m.y };
-    }
-    oneStart = null;
-    return;
-  }
-
+  if (phase === 'gate' || ui.isLetterOpen() || onControl(e.target)) { oneStart = null; return; }
   const p = e.touches[0];
   oneStart = { x: p.clientX, y: p.clientY };
   oneMoved = false;
 }, { passive: true });
 
 addEventListener('touchmove', (e) => {
-  if (phase === 'adjust' && pinch && e.touches.length === 2) {
-    const a = e.touches[0], b = e.touches[1];
+  if (!oneStart || e.touches.length !== 1) return;
+  const p = e.touches[0];
+  const dx = p.clientX - oneStart.x;
+  const dy = p.clientY - oneStart.y;
+  if (Math.hypot(dx, dy) > 8) oneMoved = true;
 
-    // pinch -> scale
-    const nd = touchDist(a, b);
-    if (pinch.dist > 0) {
-      treeScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, treeScale * (nd / pinch.dist)));
-      root.scale.setScalar(treeScale);
-    }
-    pinch.dist = nd;
-
-    // two-finger drag -> move along the floor (sideways + nearer/farther)
-    const m = touchMid(a, b);
-    const dx = (m.x - pinch.mx) * 0.006;
-    const dy = (m.y - pinch.my) * 0.006;
-    root.position.addScaledVector(rightHoriz(), dx);
-    root.position.addScaledVector(forwardHoriz(), -dy);
+  if (phase === 'edit' && useGyro) {
+    // move the tree: x = strafe, y = depth (up = push away = smaller)
+    root.position.addScaledVector(rightHoriz(), dx * 0.006);
+    root.position.addScaledVector(forwardHoriz(), -dy * 0.006);
     root.position.y = -EYE_HEIGHT;
-    pinch.mx = m.x; pinch.my = m.y;
-    return;
+  } else if (!useGyro) {
+    // desktop / no-gyro: one finger looks around
+    dragYaw   -= dx * 0.005;
+    dragPitch -= dy * 0.005;
+    dragPitch = Math.max(-1.2, Math.min(1.2, dragPitch));
   }
-
-  if (oneStart && e.touches.length === 1) {
-    const p = e.touches[0];
-    if (Math.hypot(p.clientX - oneStart.x, p.clientY - oneStart.y) > 10) oneMoved = true;
-    if (!useGyro && (phase === 'locked' || phase === 'adjust')) {
-      // no gyro (desktop / denied): one-finger drag looks around
-      dragYaw   -= (p.clientX - oneStart.x) * 0.005;
-      dragPitch -= (p.clientY - oneStart.y) * 0.005;
-      dragPitch = Math.max(-1.2, Math.min(1.2, dragPitch));
-      oneStart = { x: p.clientX, y: p.clientY };
-    }
-  }
+  oneStart = { x: p.clientX, y: p.clientY };
 }, { passive: true });
 
 const ray = new THREE.Raycaster();
 const pt  = new THREE.Vector2();
 
 addEventListener('touchend', (e) => {
-  if (e.touches.length > 0) return;   // wait for the last finger up
-  const wasPinch = !!pinch;
-  pinch = null;
-
-  if (phase === 'preview' && oneStart && !oneMoved) { enterAdjust(); oneStart = null; return; }
-
-  if (phase === 'locked' && oneStart && !oneMoved && !wasPinch) tryEnvelope(e);
+  if (e.touches.length > 0) return;
+  if (phase === 'preview' && oneStart && !oneMoved) { enterEdit(); oneStart = null; return; }
+  if (phase === 'locked' && oneStart && !oneMoved) tryEnvelope(e);
   oneStart = null;
 }, { passive: true });
 
-// desktop click = place, then tap envelope
 addEventListener('click', (e) => {
-  if (phase === 'preview') { enterAdjust(); return; }
+  if (onControl(e.target)) return;
+  if (phase === 'preview') { enterEdit(); return; }
   if (phase === 'locked') tryEnvelope(e);
 });
 
@@ -398,48 +403,71 @@ function tryEnvelope(ev) {
   ui.openLetter(ui.letterFor(scans), () => ui.status('Folded away. The bird stays.', true));
 }
 
+/* ---------- stop iOS from zooming the page ---------- */
+
+['gesturestart', 'gesturechange', 'gestureend'].forEach((t) =>
+  document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1) e.preventDefault();
+}, { passive: false });
+let lastEnd = 0;
+document.addEventListener('touchend', (e) => {
+  const n = Date.now();
+  if (n - lastEnd < 350) e.preventDefault();   // kill double-tap zoom
+  lastEnd = n;
+}, { passive: false });
+
 /* ---------- phase transitions ---------- */
 
-function enterAdjust() {
-  phase = 'adjust';
+const lockToggle = document.getElementById('lock-toggle');
+
+function enterEdit() {
+  phase = 'edit';
   document.getElementById('place-hint').hidden = true;
-  document.getElementById('adjust-bar').hidden = false;
-  document.getElementById('move-btn').hidden = true;
+  document.getElementById('edit-bar').hidden = false;
+  ring.visible = true;
+  lockToggle.hidden = false;
+  lockToggle.textContent = 'Lock';
+  document.getElementById('size-slider').value = treeScale;
   if (!bird) spawnBird(scans % 4);
   ui.status('');
 }
 
 function lockInPlace() {
   phase = 'locked';
-  document.getElementById('adjust-bar').hidden = true;
-  document.getElementById('move-btn').hidden = false;
+  document.getElementById('edit-bar').hidden = true;
   ring.visible = false;
-  ui.status('Locked. Look around it — then look away and see who follows.', true);
+  lockToggle.textContent = 'Unlock';
+  ui.status('Locked. Look away and see who follows.', true);
 }
 
-document.getElementById('lock-btn').addEventListener('click', (e) => { e.stopPropagation(); lockInPlace(); });
-document.getElementById('move-btn').addEventListener('click', (e) => {
+lockToggle.addEventListener('click', (e) => {
   e.stopPropagation();
-  ring.visible = true;
-  enterAdjust();
+  if (phase === 'locked') enterEdit(); else lockInPlace();
+});
+
+document.getElementById('size-slider').addEventListener('input', (e) => {
+  treeScale = parseFloat(e.target.value);
+  root.scale.setScalar(treeScale);
 });
 
 /* ---------- start ---------- */
+
+async function askPermission(EventClass) {
+  if (typeof EventClass !== 'undefined' && typeof EventClass.requestPermission === 'function') {
+    try { return (await EventClass.requestPermission()) === 'granted'; }
+    catch { return false; }
+  }
+  return true; // non-iOS: no gate
+}
 
 async function begin() {
   document.getElementById('gate').classList.add('hidden');
   phase = 'preview';
   document.getElementById('place-hint').hidden = false;
 
-  if (typeof DeviceOrientationEvent !== 'undefined'
-      && typeof DeviceOrientationEvent.requestPermission === 'function') {
-    try {
-      const res = await DeviceOrientationEvent.requestPermission();
-      if (res === 'granted') addEventListener('deviceorientation', onOrient);
-    } catch { /* fall through to drag */ }
-  } else {
-    addEventListener('deviceorientation', onOrient);
-  }
+  if (await askPermission(window.DeviceOrientationEvent)) addEventListener('deviceorientation', onOrient);
+  if (await askPermission(window.DeviceMotionEvent))       addEventListener('devicemotion', onMotion);
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
