@@ -307,7 +307,7 @@ button.primary:focus-visible { outline: 2px solid var(--ember); outline-offset: 
   position: fixed;
   z-index: 30;
   left: 14px; right: 14px;
-  bottom: calc(env(safe-area-inset-bottom) + 78px);
+  bottom: calc(env(safe-area-inset-bottom) + 20px);
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -410,21 +410,34 @@ button.primary:focus-visible { outline: 2px solid var(--ember); outline-offset: 
   margin-top: 14px;
   display: flex;
   justify-content: center;
-  gap: 22px;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--paper-dim);
+  gap: 10px;
 }
 
-#bird-card .bird-stats b {
-  display: block;
+#bird-card .stat {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 8px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+#bird-card .stat b {
   font-family: var(--serif);
   font-weight: 400;
   font-size: 22px;
-  letter-spacing: 0;
-  text-transform: none;
+  line-height: 1;
   color: var(--moss);
+}
+
+#bird-card .stat span {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
 }
 
 /* ---------- landing page only ---------- */

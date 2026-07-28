@@ -28,29 +28,33 @@ That is the whole deployment. Every `git push` republishes.
 1. Tap **Allow camera and begin**. Grant camera and motion access.
 2. The tree floats in front of you. Turn until it sits where you want it and
    **tap to place** it.
-3. **Pinch** to resize. **Drag with two fingers** to slide it across the floor,
-   nearer or farther. When it looks right, tap **Lock in place**.
-4. Now just look around it. Look *away* and the bird leaves the tree to hover
-   right in front of your lens. Look back and it returns to the tree, circles,
-   and settles on the crown again.
+3. **Drag with one finger** to slide it across the floor; use the **Size**
+   slider to resize. No pinch (pinch just zooms the Safari tab). When it looks
+   right, tap **Lock**.
+4. Now **walk**: step toward it and it looms larger, step around it and you see
+   its far side. Tap the branches to open the **three letters**. Look *away* and
+   the bird leaves the tree to fly in front of your lens with a little card of
+   who it is and how far you have walked; look back and it returns to the crown.
 
-The **Move tree** button (top right, after locking) drops you back into adjust
-mode if you want to reposition or resize.
+**Unlock** (top right) drops you back into edit mode to reposition or resize.
+The size slider only appears while you are facing the tree.
 
 ## About the tracking, honestly
 
-iOS Safari has no WebXR and no in-browser plane detection or SLAM. So this does
-not glue the tree to a physical floor spot the way a native ARKit app would —
-if you walk across the room, the tree will not stay pinned to the same tile.
-What it *does* do is anchor the tree by the phone's gyroscope: once placed, it
-stays fixed in **direction** in space, so you can turn all the way around and
-look at it from where you left it. For a handheld "stand here and look" piece
-that reads as placed. The bird's follow behaviour works regardless of where you
-walk, because it is anchored to the camera, not the room.
+iOS Safari has no WebXR and no in-browser plane detection or SLAM, so a web page
+cannot truly know where you are in the room. Two consequences, and how this
+handles them:
 
-If you later want true floor-locked, walk-around AR on iPhone, that needs a
-native path (ARKit / Reality Composer, or USDZ Quick Look) rather than a web
-page.
+- **Looking around** is real: the tree is anchored by the gyroscope, so once
+  placed it stays fixed in direction and you can turn all the way around it.
+- **Walking** is *estimated*: the accelerometer counts your footfalls and shifts
+  the tree along the way you are facing, so stepping toward it enlarges it and
+  stepping around it reveals other sides. It is dead-reckoning, not true
+  tracking — it can drift, and it assumes you walk in the direction you point.
+
+For rock-solid, floor-locked, walk-around AR on iPhone you need a native path
+(ARKit / Reality Composer, or USDZ Quick Look) or a commercial WebAR SDK with
+computer-vision SLAM (8th Wall). Both are bigger lifts than this static page.
 
 ## The growth slider
 
@@ -67,13 +71,15 @@ which is useful for showing collaborators a specific stage.
 | Piece | Status |
 |---|---|
 | Markerless camera AR | Real |
-| Gyro-anchored placement, pinch-scale, two-finger move | Real |
+| Gyro-anchored placement, one-finger move, slider resize | Real |
 | Procedural tree driven by one number | Real, deterministic and seeded |
-| Envelope, letter, fold interaction | Real |
-| Bird: orbit → perch → follow-the-camera | Real |
+| Three envelopes, three letters, fold interaction | Real |
+| Bird: orbit → perch → follow-the-camera, with its card | Real |
 | Four bird variants, 24 hour expiry | Real |
+| Walk-to-scale + walk-around (step dead-reckoning) | Real, but *estimated* — see tracking note |
+| Distance-covered counter from the pedometer | Real, estimated from steps |
 | **Shared growth across visitors** | **Faked.** Local to your phone |
-| **Floor-locked walk-around tracking** | **Not attempted.** See tracking note above |
+| **True floor-locked SLAM tracking** | **Not attempted.** See tracking note above |
 
 ## Adding the real shared tree
 
